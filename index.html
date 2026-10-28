@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Find in File</title>
+<style>
+:root{--paper:#f0f0ec;--ink:#000;--yellow:#ffe600;--blue:#2540ff;--pink:#ff5fa2;--white:#fff;--b:3px solid var(--ink);--sh:6px 6px 0 var(--ink)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 "Courier New",ui-monospace,Menlo,monospace;color-scheme:light}
+main{max-width:920px;margin:0 auto;padding:28px 16px 70px}
+header{background:var(--yellow);border:var(--b);box-shadow:var(--sh);padding:18px 20px;margin-bottom:28px}
+h1{font:900 clamp(2.2rem,8vw,4.2rem)/.95 "Arial Black",Impact,Haettenschweiler,sans-serif;margin:0;letter-spacing:-.03em;text-transform:uppercase}
+header p{margin:10px 0 0;font-weight:700;max-width:60ch}
+#drop{display:block;width:100%;text-align:left;font:inherit;color:inherit;background:var(--white);border:var(--b);box-shadow:var(--sh);padding:26px 20px;cursor:pointer}
+#drop:hover,#drop.over{background:var(--blue);color:var(--white)}
+#drop strong{display:block;font:900 1.5rem/1.1 "Arial Black",Impact,sans-serif}
+#drop span{display:block;margin-top:6px}
+.row{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-top:22px}
+input[type=search]{flex:1 1 280px;font:700 1.15rem "Courier New",monospace;padding:14px;border:var(--b);background:var(--white);color:var(--ink);box-shadow:var(--sh);border-radius:0}
+input[type=search]:disabled{background:#d6d6d0;box-shadow:none}
+select{font:700 1rem "Courier New",monospace;padding:8px 10px;border:var(--b);background:var(--white);border-radius:0}
+:focus-visible{outline:4px solid var(--blue);outline-offset:3px}
+label.chk{display:flex;gap:8px;align-items:center;font-weight:700}
+input[type=checkbox]{width:22px;height:22px;accent-color:#000;margin:0}
+#files{margin-top:18px;display:flex;flex-wrap:wrap;gap:10px}
+.chip{border:var(--b);background:var(--white);padding:3px 10px;font-weight:700;font-size:.9rem}
+.chip.busy{background:var(--pink)}
+.chip.err{background:#ff4d4d}
+progress{width:100%;height:20px;margin-top:16px;display:none;appearance:none;border:var(--b);background:var(--white);border-radius:0}
+progress::-webkit-progress-bar{background:var(--white)}
+progress::-webkit-progress-value{background:var(--blue)}
+progress::-moz-progress-bar{background:var(--blue)}
+#status{margin-top:20px;font-weight:700;min-height:1.5em;border-left:10px solid var(--ink);padding-left:10px}
+#res{margin-top:18px}
+.hit{background:var(--white);border:var(--b);box-shadow:4px 4px 0 var(--ink);padding:10px 14px;margin:0 4px 16px 0;white-space:pre-wrap;word-break:break-word}
+.hit small{display:inline-block;background:var(--ink);color:var(--white);padding:1px 8px;margin-bottom:6px;font-weight:700}
+mark{background:var(--yellow);color:var(--ink);outline:2px solid var(--ink);padding:0 2px;font-weight:700}
+details{margin-top:30px;border:var(--b);background:var(--white);box-shadow:var(--sh)}
+summary{cursor:pointer;padding:12px 16px;font-weight:900;background:var(--pink)}
+pre.full{margin:0;padding:14px;white-space:pre-wrap;word-break:break-word;max-height:440px;overflow:auto;font:inherit;border-top:var(--b)}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>Find in file</h1>
+  <p>Drop a file or a photo of a written page. Search any word, line or number inside it.</p>
+</header>
+
+<button id="drop" type="button">
+  <strong>Drop files here or click to choose</strong>
+  <span>Photos (JPG, PNG), PDF, Word (.docx), TXT, CSV. Several files at once is fine.</span>
+</button>
+<input id="pick" type="file" multiple hidden accept="image/*,.pdf,.docx,.txt,.csv,.json,.md">
+
+<div class="row">
+  <label class="chk">Language in photos
+    <select id="lang">
+      <option value="eng">English</option>
+      <option value="urd">Urdu</option>
+      <option value="eng+urd">English + Urdu</option>
+    </select>
+  </label>
+</div>
+<div id="files"></div>
+<progress id="bar" max="1" value="0"></progress>
+
+<div class="row">
+  <input id="q" type="search" placeholder="Type a word, line or number" aria-label="Search" disabled>
+  <label class="chk"><input type="checkbox" id="cs"> Match case</label>
+  <label class="chk"><input type="checkbox" id="ww"> Whole word</label>
+</div>
+<div id="status" role="status">Add a file to begin.</div>
+<div id="res"></div>
+
+<details id="fulldet" hidden>
+  <summary>Show all extracted text</summary>
+  <pre class="full" id="full"></pre>
+</details>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const pages = []; // {file, label, text}
+const drop = $('drop'), pick = $('pick'), q = $('q'), bar = $('bar');
+if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+drop.onclick = () => pick.click();
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); handle([...e.dataTransfer.files]); };
+pick.onchange = () => { handle([...pick.files]); pick.value = ''; };
+q.addEventListener('input', search);
+$('cs').onchange = $('ww').onchange = search;
+
+const status = t => { $('status').textContent = t; };
+
+async function ocr(src, name) {
+  bar.style.display = 'block'; bar.value = 0;
+  const r = await Tesseract.recognize(src, $('lang').value, {
+    logger: m => { if (m.status === 'recognizing text') { bar.value = m.progress; status(name + ': reading text… ' + Math.round(m.progress * 100) + '%'); } }
+  });
+  bar.style.display = 'none';
+  return r.data.text;
+}
+
+async function readPdf(file) {
+  const doc = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    const tc = await page.getTextContent();
+    let text = '', lastY = null;
+    for (const it of tc.items) {
+      if (lastY !== null && Math.abs(it.transform[5] - lastY) > 2) text += '\n';
+      text += it.str + ' ';
+      lastY = it.transform[5];
+    }
+    if (text.trim().length < 15) { // scanned page: fall back to OCR
+      const vp = page.getViewport({ scale: 2 });
+      const c = document.createElement('canvas');
+      c.width = vp.width; c.height = vp.height;
+      await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+      text = await ocr(c, file.name + ' p.' + i);
+    }
+    pages.push({ file: file.name, label: 'Page ' + i, text });
+  }
+}
+
+async function handle(list) {
+  for (const f of list) {
+    const chip = document.createElement('span');
+    chip.className = 'chip busy'; chip.textContent = f.name + ' …';
+    $('files').appendChild(chip);
+    try {
+      const n = f.name.toLowerCase();
+      if (f.type.startsWith('image/')) {
+        pages.push({ file: f.name, label: 'Photo', text: await ocr(f, f.name) });
+      } else if (n.endsWith('.pdf')) {
+        await readPdf(f);
+      } else if (n.endsWith('.docx')) {
+        const r = await mammoth.extractRawText({ arrayBuffer: await f.arrayBuffer() });
+        pages.push({ file: f.name, label: 'Document', text: r.value });
+      } else {
+        pages.push({ file: f.name, label: 'Text', text: await f.text() });
+      }
+      chip.className = 'chip'; chip.textContent = f.name + ' ✓';
+    } catch (err) {
+      chip.className = 'chip err'; chip.textContent = f.name + ' could not be read';
+      console.error(err);
+    }
+  }
+  bar.style.display = 'none';
+  if (pages.length) { q.disabled = false; q.focus(); status('Ready. Type something to search.'); }
+  else status('No file could be read. Try another file.');
+  $('full').textContent = pages.map(p => '=== ' + p.file + ' (' + p.label + ') ===\n' + p.text).join('\n\n');
+  $('fulldet').hidden = !pages.length;
+  search();
+}
+
+const esc = s => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const reEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function search() {
+  const term = q.value.trim(), out = $('res');
+  out.innerHTML = '';
+  if (!term) { if (pages.length) status('Ready. Type something to search.'); return; }
+  let pat = reEsc(term);
+  if ($('ww').checked) pat = '(?<![\\p{L}\\p{N}_])' + pat + '(?![\\p{L}\\p{N}_])';
+  const re = new RegExp(pat, 'gu' + ($('cs').checked ? '' : 'i'));
+  let total = 0, lines = 0;
+  const frag = document.createDocumentFragment();
+  for (const p of pages) {
+    p.text.split(/\r?\n/).forEach((line, idx) => {
+      if (!line.trim()) return;
+      const ms = [...line.matchAll(re)];
+      if (!ms.length) return;
+      total += ms.length; lines++;
+      let html = '', last = 0;
+      for (const m of ms) {
+        html += esc(line.slice(last, m.index)) + '<mark>' + esc(m[0]) + '</mark>';
+        last = m.index + m[0].length;
+      }
+      html += esc(line.slice(last));
+      const d = document.createElement('div');
+      d.className = 'hit';
+      d.innerHTML = '<small>' + esc(p.file) + ' / ' + p.label + ' / line ' + (idx + 1) + '</small><br>' + html;
+      frag.appendChild(d);
+    });
+  }
+  out.appendChild(frag);
+  status(total ? total + ' match' + (total > 1 ? 'es' : '') + ' in ' + lines + ' line' + (lines > 1 ? 's' : '') + '.' : 'No match. Check the spelling or try another word.');
+}
+</script>
+</body>
+</html>
